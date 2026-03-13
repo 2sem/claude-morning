@@ -4,8 +4,11 @@ import ArgumentParser
 struct RunCommand: AsyncParsableCommand {
 	static let configuration = CommandConfiguration(
 		commandName: "run",
-		abstract: "Run the morning briefing and send to Slack"
+		abstract: "Run morning briefing for all projects"
 	)
+
+	@Flag(name: .long, help: "Skip scheduling checks and run immediately")
+	var force = false
 
 	func run() async throws {
 		let config: Config
@@ -15,70 +18,73 @@ struct RunCommand: AsyncParsableCommand {
 			throw CLIError.configNotFound
 		}
 
-		print("Running Claude…")
-		let output = try await runClaude(config: config)
+		if !force {
+			if alreadyRanToday() {
+				print("Already ran today, skipping. Use --force to override.")
+				return
+			}
+			if beforeScheduledTime(config.scheduledTime) {
+				print("Before scheduled time (\(config.scheduledTime)), skipping.")
+				return
+			}
+		}
 
-		print("Sending to Slack…")
-		try await postToSlack(webhook: config.slackWebhook, output: output)
+		for project in config.projects {
+			print("[\(project.name)] Running Claude…")
+			do {
+				let output = try await runClaude(project: project)
+				print("[\(project.name)] Sending message…")
+				let message = "🌅 *Morning Briefing — \(project.name)*\n\n\(output)"
+				try await project.messageProvider.send(message)
+				print("[\(project.name)] Sent ✓")
+			} catch {
+				print("[\(project.name)] Error: \(error)")
+			}
+		}
 
-		print("Sent to Slack ✓")
+		saveLastRun()
 	}
 
-	private func runClaude(config: Config) async throws -> String {
+	private func alreadyRanToday() -> Bool {
+		guard let data = try? Data(contentsOf: Config.lastRunURL),
+			  let dateStr = String(data: data, encoding: .utf8)?.trimmingCharacters(in: .whitespacesAndNewlines)
+		else { return false }
+		return dateStr == todayString()
+	}
+
+	private func beforeScheduledTime(_ scheduledTime: String) -> Bool {
+		let parts = scheduledTime.split(separator: ":").compactMap { Int($0) }
+		guard parts.count == 2 else { return false }
+		let now = Calendar.current.dateComponents([.hour, .minute], from: Date())
+		let nowMinutes = (now.hour ?? 0) * 60 + (now.minute ?? 0)
+		let scheduledMinutes = parts[0] * 60 + parts[1]
+		return nowMinutes < scheduledMinutes
+	}
+
+	private func saveLastRun() {
+		try? todayString().data(using: .utf8)?.write(to: Config.lastRunURL, options: .atomic)
+	}
+
+	private func todayString() -> String {
+		let fmt = DateFormatter()
+		fmt.dateFormat = "yyyy-MM-dd"
+		return fmt.string(from: Date())
+	}
+
+	private func runClaude(project: Project) async throws -> String {
 		let process = Process()
 		process.executableURL = URL(fileURLWithPath: "/usr/bin/env")
-		process.arguments = ["claude", "-c", "-p", config.prompt]
-		process.currentDirectoryURL = URL(fileURLWithPath: config.projectPath)
-
+		process.arguments = ["claude", "-c", "-p", project.prompt]
+		process.currentDirectoryURL = URL(fileURLWithPath: project.path)
 		let pipe = Pipe()
 		process.standardOutput = pipe
 		process.standardError = Pipe()
-
 		try process.run()
-
 		let data = pipe.fileHandleForReading.readDataToEndOfFile()
 		process.waitUntilExit()
-
 		guard process.terminationStatus == 0 else {
 			throw CLIError.claudeFailed(status: process.terminationStatus)
 		}
-
 		return String(data: data, encoding: .utf8) ?? ""
-	}
-
-	private func postToSlack(webhook: String, output: String) async throws {
-		guard let url = URL(string: webhook) else {
-			throw CLIError.invalidWebhookURL
-		}
-
-		let body = ["text": "🌅 *Morning Briefing*\n\n\(output)"]
-		let bodyData = try JSONEncoder().encode(body)
-
-		var request = URLRequest(url: url)
-		request.httpMethod = "POST"
-		request.setValue("application/json", forHTTPHeaderField: "Content-Type")
-		request.httpBody = bodyData
-
-		let (_, response) = try await URLSession.shared.data(for: request)
-
-		guard let http = response as? HTTPURLResponse, (200...299).contains(http.statusCode) else {
-			throw CLIError.slackPostFailed
-		}
-	}
-}
-
-enum CLIError: Error, CustomStringConvertible {
-	case claudeFailed(status: Int32)
-	case invalidWebhookURL
-	case slackPostFailed
-	case configNotFound
-
-	var description: String {
-		switch self {
-		case .claudeFailed(let status): "claude exited with status \(status)"
-		case .invalidWebhookURL: "Invalid Slack webhook URL"
-		case .slackPostFailed: "Failed to post to Slack"
-		case .configNotFound: "Config not found — run `claude-morning init` first"
-		}
 	}
 }
