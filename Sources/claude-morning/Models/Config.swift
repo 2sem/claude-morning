@@ -1,15 +1,20 @@
 import Foundation
 
 struct Config: Codable {
-	var slackWebhook: String
-	var projectPath: String
-	var prompt: String
+	var scheduledTime: String  // "HH:mm" format, e.g. "09:00"
+	var projects: [Project]
 
-	static let defaultPrompt = "Generate today's morning briefing as mobile team manager. Check open GitHub issues, recent commits on main, and pending PRs. Summarize what the team should focus on today."
+	static var configDir: URL {
+		FileManager.default.homeDirectoryForCurrentUser
+			.appendingPathComponent(".config/claude-morning")
+	}
 
 	static var configURL: URL {
-		FileManager.default.homeDirectoryForCurrentUser
-			.appendingPathComponent(".claude-morning.json")
+		configDir.appendingPathComponent("config.json")
+	}
+
+	static var lastRunURL: URL {
+		configDir.appendingPathComponent("last-run")
 	}
 
 	static func load() throws -> Config {
@@ -18,6 +23,7 @@ struct Config: Codable {
 	}
 
 	func save() throws {
+		try FileManager.default.createDirectory(at: Config.configDir, withIntermediateDirectories: true)
 		let encoder = JSONEncoder()
 		encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
 		let data = try encoder.encode(self)

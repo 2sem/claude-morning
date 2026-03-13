@@ -4,7 +4,7 @@ import ArgumentParser
 struct UninstallCommand: AsyncParsableCommand {
 	static let configuration = CommandConfiguration(
 		commandName: "uninstall",
-		abstract: "Remove the LaunchAgent and config file"
+		abstract: "Remove the LaunchAgent and all config files"
 	)
 
 	func run() async throws {
@@ -24,11 +24,11 @@ struct UninstallCommand: AsyncParsableCommand {
 			print("LaunchAgent not installed, skipping")
 		}
 
-		if FileManager.default.fileExists(atPath: Config.configURL.path) {
-			try FileManager.default.removeItem(at: Config.configURL)
-			print("✓ Config removed")
+		if FileManager.default.fileExists(atPath: Config.configDir.path) {
+			try FileManager.default.removeItem(at: Config.configDir)
+			print("✓ Config directory removed (\(Config.configDir.path))")
 		} else {
-			print("Config not found, skipping")
+			print("Config directory not found, skipping")
 		}
 
 		print("\nUninstalled successfully.")
